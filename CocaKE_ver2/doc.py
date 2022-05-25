@@ -393,3 +393,12 @@ def to_indices_and_mask(batch_tensor, pad_token_id=0, need_mask=True):
         return indices, mask
     else:
         return indices
+    
+class MyBatchSampler(torch.utils.data.Sampler):
+    def __init__(self, batches):
+        self.batches = batches
+    def __iter__(self):
+        for batch in self.batches:
+            yield batch
+    def __len__(self):
+        return len(self.batches)

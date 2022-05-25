@@ -1,12 +1,16 @@
+import imp
 from posixpath import commonpath
 import torch
 import json
 import torch.backends.cudnn as cudnn
-
+import os
 from doc import Dataset, RelGenDataset
 from config import args
 from trainer import Trainer
 from logger_config import logger
+from doc import Dataset, collate, RelGenDataset, rel_gen_collate
+from torch.utils.data import Sampler, DataLoader
+import random
 
 
 def main():
@@ -24,12 +28,4 @@ if __name__ == '__main__':
     ngpus_per_node = torch.cuda.device_count()
     trainer = Trainer(args, ngpus_per_node=ngpus_per_node)
     main()
-    """
-    train_dataset = RelGenDataset(path=args.train_path, task=args.task, batch_size = args.batch_size, commonsense_path = args.commonsense_path)
-    mapping = {
-      "1": [],
-      "N": []
-    }
-    for i in range(200):
-        print(train_dataset[i])
-    """
+   

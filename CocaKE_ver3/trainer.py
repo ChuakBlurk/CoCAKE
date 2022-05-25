@@ -10,7 +10,7 @@ from typing import Dict
 from transformers import get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
 from transformers import AdamW
 
-from doc import Dataset, collate, RelGenDataset, rel_gen_collate
+from doc import Dataset, collate, RelGenDataset, rel_gen_collate, RelationBatchSampler
 from utils import AverageMeter, ProgressMeter
 from utils import save_checkpoint, delete_old_ckt, report_num_trainable_parameters, move_to_cuda, get_model_obj
 from metric import accuracy
@@ -40,22 +40,20 @@ class Trainer:
                                weight_decay=args.weight_decay)
         report_num_trainable_parameters(self.model)
 
-        train_dataset = RelGenDataset(path=args.train_path, task=args.task, batch_size = args.batch_size, commonsense_path = args.commonsense_path, cake_ratio = args.cake_ratio)
+        train_dataset = Dataset(path=args.train_path, task=args.task)
         valid_dataset = Dataset(path=args.valid_path, task=args.task) if args.valid_path else None
         num_training_steps = args.epochs * len(train_dataset) // max(args.batch_size, 1)
         args.warmup = min(args.warmup, num_training_steps // 10)
         logger.info('Total training steps: {}, warmup steps: {}'.format(num_training_steps, args.warmup))
         self.scheduler = self._create_lr_scheduler(num_training_steps)
         self.best_metric = None
-
+        sampler = RelationBatchSampler(batch_size=args.batch_size, commonsense_path= args.commonsense_path, cake_ratio = args.cake_ratio, ds_info=train_dataset.ds_info())
         self.train_loader = torch.utils.data.DataLoader(
             train_dataset,
-            batch_size=1,
-            shuffle=True,
-            collate_fn=rel_gen_collate,
+            batch_sampler = sampler,
+            collate_fn=collate,
             num_workers=args.workers,
-            pin_memory=True,
-            drop_last=True)
+            pin_memory=True)
 
         self.valid_loader = None
         if valid_dataset:
