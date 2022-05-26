@@ -10,7 +10,7 @@ from typing import Dict
 from transformers import get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
 from transformers import AdamW
 
-from doc import Dataset, collate, RelGenDataset, rel_gen_collate, RelationBatchSampler
+from doc import Dataset, collate, rel_gen_collate, RelationBatchSampler
 from utils import AverageMeter, ProgressMeter
 from utils import save_checkpoint, delete_old_ckt, report_num_trainable_parameters, move_to_cuda, get_model_obj
 from metric import accuracy
