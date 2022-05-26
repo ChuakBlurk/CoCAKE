@@ -21,8 +21,6 @@ parser.add_argument('--model-dir', default='', type=str, metavar='N',
                     help='path to model dir')
 parser.add_argument('--warmup', default=400, type=int, metavar='N',
                     help='warmup steps')
-parser.add_argument('--rel-per-batch', default=8, type=int, metavar='N',
-                    help='relations per batch')
 parser.add_argument('--max-to-keep', default=5, type=int, metavar='N',
                     help='max number of checkpoints to keep')
 parser.add_argument('--grad-clip', default=10.0, type=float, metavar='N',
@@ -49,7 +47,7 @@ parser.add_argument('--finetune-t', action='store_true',
                     help='make temperature as a trainable parameter or not')
 parser.add_argument('--max-num-tokens', default=50, type=int,
                     help='maximum number of tokens')
-parser.add_argument('--cake-ratio', default=1, type=float,
+parser.add_argument('--cake-ratio', default=0.5, type=float,
                     help='maximum number of tokens')
 parser.add_argument('--use-self-negative', action='store_true',
                     help='use head entity as negative')

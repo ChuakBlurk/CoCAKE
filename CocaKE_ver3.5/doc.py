@@ -149,13 +149,6 @@ class Dataset(torch.utils.data.dataset.Dataset):
                 self.rel_ex_cnt[example.relation] += 1
             else:
                 self.rel_ex_cnt[example.relation] = 1
-            #############################
-            if example.relation in self.rel_hent:
-                self.rel_hent[example.relation].append(example.head)
-            else:
-                self.rel_hent[example.relation] = [example.head]
-            #############################                
-        print([len(set(i)) for i in self.rel_hent.values()])
 
     def __len__(self):
         return len(self.examples)
@@ -296,7 +289,7 @@ def to_indices_and_mask(batch_tensor, pad_token_id=0, need_mask=True):
     
 class RelationBatchSampler:   
         
-    def __init__(self, batch_size, commonsense_path, cake_ratio, ds_info, rel_per_batch):
+    def __init__(self, batch_size, commonsense_path, cake_ratio, ds_info):
         self.commonsense_path = commonsense_path
         self.ent_dom = json.load(open(os.path.join(commonsense_path,"ent_dom.json"), 'r', encoding='utf-8'))
         self.dom_ent = json.load(open(os.path.join(commonsense_path,"dom_ent.json"), 'r', encoding='utf-8'))
@@ -305,7 +298,6 @@ class RelationBatchSampler:
         self.rel2nn = json.load(open(os.path.join(commonsense_path,"rel2nn.json"), 'r', encoding='utf-8'))
         self.batch_size = batch_size
         self.cake_ratio = cake_ratio   
-        self.rel_per_batch = self.rel_per_batch
             
         self.rels = ds_info["rels"] 
         self.rel2ent_t = ds_info["rel2ent_t"] 
@@ -328,15 +320,10 @@ class RelationBatchSampler:
                     k=1
                 )[0]
                 if sampled_relation not in sampled_relations:
-                    temp = self.concept_filter(sampled_relation, self.batch_size//self.rel_per_batch)
+                    temp = self.concept_filter(sampled_relation, self.batch_size//8)
                     sampled_exs += temp
                     head_id_list = [self.ex_hid[ex] for ex in temp]
-                    if len(set(head_id_list)) > 20:
-                        print("================================")
-                        for i in temp:
-                            example = self.id2example[i]
-                            print(example.head, example.relation, example.tail)                            
-                        print("================================")
+        
                     sampled_exs = list(set(sampled_exs))
                     sampled_relations.append(sampled_relation)
             random_sample_cnt = args.batch_size - cake_sample_cnt
@@ -375,15 +362,13 @@ class RelationBatchSampler:
             corrupted_example = []
             selected_ents = []
             while len(corrupted_example) <= example_size:
-                if len(relation_concepts) == 1:
-                    print(len(relation_concepts))
                 selected_concept = random.choice(relation_concepts)
                 for ent in self.dom_ent[str(selected_concept)]:
                     if ent in relation_ents:
                         corrupted_example += relation_ents[ent]
                         selected_ents.append(self.ent_dom[ent])
                 
-            # print("1: ", compute_mutual_exclusiveness(selected_ents, "jaccard"))
+            # "1: ", compute_mutual_exclusiveness(selected_ents, "jaccard"))
             # return "1", compute_mutual_exclusiveness(selected_ents, "jaccard")
             return corrupted_example[:example_size]
         else:
@@ -394,8 +379,6 @@ class RelationBatchSampler:
             selected_ents = []
             while len(corrupted_example) <= example_size:
                 # for each concept
-                if len(relation_concepts) == 1:
-                    print(len(relation_concepts))
                 for concept in relation_concepts:
                     # find one
                     while True:
@@ -405,6 +388,6 @@ class RelationBatchSampler:
                             selected_ents.append(self.ent_dom[ent_chosen])
                             break
                 
-            # print("N: ", compute_mutual_exclusiveness(selected_ents, "jaccard"))
+            # "N: ", compute_mutual_exclusiveness(selected_ents, "jaccard"))
             # return "N", compute_mutual_exclusiveness(selected_ents, "jaccard")
             return corrupted_example[:example_size]

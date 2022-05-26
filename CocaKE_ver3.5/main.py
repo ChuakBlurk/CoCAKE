@@ -26,16 +26,6 @@ def main():
 
 
 if __name__ == '__main__':
-    ngpus_per_node = torch.cuda.device_count()
-    # trainer = Trainer(args, ngpus_per_node=ngpus_per_node)
-    train_dataset = Dataset(path=args.train_path, task=args.task)
-    sampler = RelationBatchSampler(batch_size=args.batch_size, commonsense_path= args.commonsense_path, cake_ratio = args.cake_ratio, ds_info=train_dataset.ds_info())
-    train_loader = torch.utils.data.DataLoader(
-            train_dataset,
-            batch_sampler = sampler,
-            collate_fn=collate,
-            num_workers=args.workers,
-            pin_memory=True)
-    next(iter(train_loader))
-    # main()
+    
+    main()
    
