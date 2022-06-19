@@ -1,8 +1,10 @@
 from abc import ABC
 from copy import deepcopy
+import imp
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from dataclasses import dataclass
 from transformers import AutoModel, AutoConfig
@@ -42,6 +44,9 @@ class CustomBertModel(nn.Module, ABC):
 
         self.hr_bert = AutoModel.from_pretrained(args.pretrained_model)
         self.tail_bert = deepcopy(self.hr_bert)
+        ####### cake parameters ######
+        self.cake_gamma = args.cake_gamma
+        self.cake_adversial_weight = args.cake_adversial_weight
 
     def _encode(self, encoder, token_ids, mask, token_type_ids):
         outputs = encoder(input_ids=token_ids,
@@ -54,7 +59,7 @@ class CustomBertModel(nn.Module, ABC):
         cls_output = _pool_output(self.args.pooling, cls_output, mask, last_hidden_state)
         return cls_output
 
-    def forward(self, hr_token_ids, hr_mask, hr_token_type_ids,
+    def vec_forward(self, hr_token_ids, hr_mask, hr_token_type_ids,
                 tail_token_ids, tail_mask, tail_token_type_ids,
                 head_token_ids, head_mask, head_token_type_ids,
                 only_ent_embedding=False, **kwargs) -> dict:
@@ -82,6 +87,109 @@ class CustomBertModel(nn.Module, ABC):
         return {'hr_vector': hr_vector,
                 'tail_vector': tail_vector,
                 'head_vector': head_vector}
+
+
+    def forward(self, simkgc, cake):
+        simkgc_vecs = self.vec_forward(**simkgc) # hr_vector, tail_vector, head_vector       
+        cake_vecs = {}
+        for i in cake:
+            cake_vecs[i] = {}
+            cake_vecs[i]["head"] = self.vec_forward(**cake[i]["head"])
+            cake_vecs[i]["tail"] = self.vec_forward(**cake[i]["tail"])
+        return {
+            "simkgc": simkgc_vecs,
+            "cake": cake_vecs
+        }
+    def original_forward(self, hr_token_ids, hr_mask, hr_token_type_ids,
+                tail_token_ids, tail_mask, tail_token_type_ids,
+                head_token_ids, head_mask, head_token_type_ids,
+                only_ent_embedding=False, **kwargs) -> dict:
+        if only_ent_embedding:
+            return self.predict_ent_embedding(tail_token_ids=tail_token_ids,
+                                              tail_mask=tail_mask,
+                                              tail_token_type_ids=tail_token_type_ids)
+
+        hr_vector = self._encode(self.hr_bert,
+                                 token_ids=hr_token_ids,
+                                 mask=hr_mask,
+                                 token_type_ids=hr_token_type_ids)
+
+        tail_vector = self._encode(self.tail_bert,
+                                   token_ids=tail_token_ids,
+                                   mask=tail_mask,
+                                   token_type_ids=tail_token_type_ids)
+
+        head_vector = self._encode(self.tail_bert,
+                                   token_ids=head_token_ids,
+                                   mask=head_mask,
+                                   token_type_ids=head_token_type_ids)
+
+        # DataParallel only support tensor/dict
+        return {'hr_vector': hr_vector,
+                'tail_vector': tail_vector,
+                'head_vector': head_vector}
+                
+    def original_compute_logits(self, output_dict: dict, batch_dict: dict) -> dict:
+        hr_vector, tail_vector = output_dict['hr_vector'], output_dict['tail_vector']
+        batch_size = hr_vector.size(0)
+        labels = torch.arange(batch_size).to(hr_vector.device)
+
+        logits = hr_vector.mm(tail_vector.t())
+        if self.training:
+            logits -= torch.zeros(logits.size()).fill_diagonal_(self.add_margin).to(logits.device)
+        logits *= self.log_inv_t.exp()
+
+        triplet_mask = batch_dict.get('triplet_mask', None)
+        if triplet_mask is not None:
+            logits.masked_fill_(~triplet_mask, -1e4)
+
+        if self.pre_batch > 0 and self.training:
+            pre_batch_logits = self._compute_pre_batch_logits(hr_vector, tail_vector, batch_dict)
+            logits = torch.cat([logits, pre_batch_logits], dim=-1)
+
+        if self.args.use_self_negative and self.training:
+            head_vector = output_dict['head_vector']
+            self_neg_logits = torch.sum(hr_vector * head_vector, dim=1) * self.log_inv_t.exp()
+            self_negative_mask = batch_dict['self_negative_mask']
+            self_neg_logits.masked_fill_(~self_negative_mask, -1e4)
+            logits = torch.cat([logits, self_neg_logits.unsqueeze(1)], dim=-1)
+
+        return {'logits': logits,
+                'labels': labels,
+                'inv_t': self.log_inv_t.detach().exp(),
+                'hr_vector': hr_vector.detach(),
+                'tail_vector': tail_vector.detach()}
+            
+    def compute_cake_loss(self, simkgc_output, cake_output_dict: dict):
+        simkgc_hr = simkgc_output["hr_vector"]
+        simkgc_tail = simkgc_output["tail_vector"]
+
+        
+        positive_scores = simkgc_hr.mm(simkgc_tail.t()).diagonal()
+        # positive_score -= torch.zeros(mm.size()).fill_diagonal_(self.cake_gamma).to(positive_score.device)
+        # positive_scores *= self.log_inv_t.exp()
+        loss = 0.0
+        ##############################
+        ######## pos sample ##########
+        for idx in cake_output_dict:
+            ######### neg samples ########
+            ex_list = cake_output_dict[idx]
+            hr_vector, tail_vector = ex_list["head"]['hr_vector']+ex_list["tail"]['hr_vector'], ex_list["head"]['tail_vector']+ex_list["tail"]['tail_vector']
+            batch_size = hr_vector.size(0)
+            logits = hr_vector.mm(tail_vector.t())
+            triplet_mask = ex_list.get('triplet_mask', None)
+            if triplet_mask is not None:
+                logits = logits.mm(triplet_mask.t())
+            negative_score = logits.diagonal()
+            negative_score = F.logsigmoid(-negative_score).mean()
+            negative_score *= self.log_inv_t.exp()
+            positive_score = positive_scores[idx]
+            positive_score = F.logsigmoid(positive_score)
+            positive_sample_loss = - positive_score.mean()
+            negative_sample_loss = - negative_score.mean()
+            loss += (positive_sample_loss + negative_sample_loss)/(2*(len(hr_vector)))
+        loss /= len(cake_output_dict)
+        return loss
 
     def compute_logits(self, output_dict: dict, batch_dict: dict) -> dict:
         hr_vector, tail_vector = output_dict['hr_vector'], output_dict['tail_vector']

@@ -20,6 +20,8 @@ def main():
 
 
 if __name__ == '__main__':
+    
+    """
     train_dataset = Dataset(path=args.train_path, task=args.task, commonsense_path=args.commonsense_path, head_ns_cnt=args.head_ns_cnt, tail_ns_cnt=args.tail_ns_cnt)
     train_loader = torch.utils.data.DataLoader(
             train_dataset,
@@ -30,4 +32,5 @@ if __name__ == '__main__':
             pin_memory=True,
             drop_last=True)    
     print(next(iter(train_loader)))
-    # main()
+    """
+    main()

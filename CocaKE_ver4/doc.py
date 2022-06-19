@@ -109,31 +109,29 @@ class Example:
                 'head_token_ids': head_encoded_inputs['input_ids'],
                 'head_token_type_ids': head_encoded_inputs['token_type_ids'],
                 'obj': self}
+                
+class OriginalDataset(torch.utils.data.dataset.Dataset):
+    
+    def __init__(self, path, task, examples=None):
+        self.path_list = path.split(',')
+        self.task = task
+        assert all(os.path.exists(path) for path in self.path_list) or examples
+        if examples:
+            self.examples = examples
+        else:
+            self.examples = []
+            for path in self.path_list:
+                if not self.examples:
+                    self.examples = load_data(path)
+                else:
+                    self.examples.extend(load_data(path))
 
+    def __len__(self):
+        return len(self.examples)
 
-def vectorize_entity(ent_id, ent_type, relation=None):
-    ent_desc = entity_dict.get_entity_by_id(ent_id).entity_desc
-    if args.use_link_graph:
-        if len(ent_desc.split()) < 20:
-            ent_desc += ' ' + get_neighbor_desc(head_id=ent_id)
-    ent_word = _parse_entity_name(entity_dict.get_entity_by_id(ent_id).entity)
-    ent_text = _concat_name_desc(ent_word, ent_desc)
-    if relation:
-        ent_encoded_inputs = _custom_tokenize(text=ent_text,
-                                             text_pair=relation)
-    else:
-        ent_encoded_inputs = _custom_tokenize(text=ent_text)
-    
-    return {
-        ent_type+"_token_ids": ent_encoded_inputs["input_ids"],
-        ent_type+"_token_type_ids": ent_encoded_inputs["token_type_ids"]
-    }
-        
-    
-        
-            
-    
-    
+    def __getitem__(self, index):
+        return self.examples[index].vectorize()
+
     
 
 class Dataset(torch.utils.data.dataset.Dataset):
@@ -202,9 +200,13 @@ class Dataset(torch.utils.data.dataset.Dataset):
                     h.append(ent)
         h = set(h)
         if len(h) > head_ns_cnt:
-            return random.choices(list(h), k=head_ns_cnt)
-        else:
-            return list(h)
+            h = random.choices(list(h), k=head_ns_cnt)
+        ex = []
+        for corrupted_h_id in h:
+            ex.append(Example(corrupted_h_id, example.relation, example.tail_id))
+        if len(ex) < head_ns_cnt:
+            ex += random.choices(self.examples, k=head_ns_cnt-len(ex))
+        return list(ex)
         
             
     def corrupt_tail(self, example, tail_ns_cnt):
@@ -239,26 +241,26 @@ class Dataset(torch.utils.data.dataset.Dataset):
                     t.append(ent)
         t = set(t)
         if len(t) > tail_ns_cnt:
-            return random.choices(list(t), k=tail_ns_cnt)
-        else:
-            return list(t)
+            t = random.choices(list(t), k=tail_ns_cnt)
+        ex = []
+        for corrupted_t_id in t:
+            ex.append(Example(example.head_id, example.relation, corrupted_t_id))
+        if len(ex) < tail_ns_cnt:
+            ex += random.choices(self.examples, k=tail_ns_cnt-len(ex))
+        return list(ex)
     
     def __len__(self):
         return len(self.examples)
 
     def __getitem__(self, index):
         selected_example = self.examples[index]
-        corrupted_head = self.corrupt_head(selected_example, self.head_ns_cnt)
-        corrupted_tail = self.corrupt_tail(selected_example, self.tail_ns_cnt)
-        neg_heads_vectorized = [vectorize_entity(head, "head") for head in corrupted_head]
-        neg_tails_vectorized = [vectorize_entity(tail, "tail") for tail in corrupted_tail]
-        neg_hrs_vectorized = [vectorize_entity(head, "hr", selected_example.relation) for head in corrupted_head]
+        corrupted_head_exs = self.corrupt_head(selected_example, self.head_ns_cnt)
+        corrupted_tail_exs = self.corrupt_tail(selected_example, self.tail_ns_cnt)
         return {
             "simkgc": selected_example.vectorize(),
             "cake":{
-                "heads": neg_heads_vectorized,
-                "tails": neg_tails_vectorized,
-                "hrs": neg_hrs_vectorized,    
+                "head": [ex.vectorize() for ex in corrupted_head_exs],
+                "tail": [ex.vectorize() for ex in corrupted_tail_exs]  
             }
         }
         
@@ -287,32 +289,29 @@ def load_data(path: str,
     return examples
 
 
-def collate(batch_data: List[dict]) -> dict:
-    
-    ################ simkgc ################
+def example2batch_item(batch_example: List[dict]) -> dict:
     hr_token_ids, hr_mask = to_indices_and_mask(
-        [torch.LongTensor(ex["simkgc"]['hr_token_ids']) for ex in batch_data],
+        [torch.LongTensor(ex['hr_token_ids']) for ex in batch_example],
         pad_token_id=get_tokenizer().pad_token_id)
     hr_token_type_ids = to_indices_and_mask(
-        [torch.LongTensor(ex["simkgc"]['hr_token_type_ids']) for ex in batch_data],
+        [torch.LongTensor(ex['hr_token_type_ids']) for ex in batch_example],
         need_mask=False)
 
     tail_token_ids, tail_mask = to_indices_and_mask(
-        [torch.LongTensor(ex["simkgc"]['tail_token_ids']) for ex in batch_data],
+        [torch.LongTensor(ex['tail_token_ids']) for ex in batch_example],
         pad_token_id=get_tokenizer().pad_token_id)
     tail_token_type_ids = to_indices_and_mask(
-        [torch.LongTensor(ex["simkgc"]['tail_token_type_ids']) for ex in batch_data],
+        [torch.LongTensor(ex['tail_token_type_ids']) for ex in batch_example],
         need_mask=False)
 
     head_token_ids, head_mask = to_indices_and_mask(
-        [torch.LongTensor(ex["simkgc"]['head_token_ids']) for ex in batch_data],
+        [torch.LongTensor(ex['head_token_ids']) for ex in batch_example],
         pad_token_id=get_tokenizer().pad_token_id)
     head_token_type_ids = to_indices_and_mask(
-        [torch.LongTensor(ex["simkgc"]['head_token_type_ids']) for ex in batch_data],
+        [torch.LongTensor(ex['head_token_type_ids']) for ex in batch_example],
         need_mask=False)
-    ############### end of simkgc ############
     
-    batch_exs = [ex["simkgc"]['obj'] for ex in batch_data]
+    batch_exs = [ex['obj'] for ex in batch_example]
     batch_dict = {
         'hr_token_ids': hr_token_ids,
         'hr_mask': hr_mask,
@@ -327,8 +326,66 @@ def collate(batch_data: List[dict]) -> dict:
         'triplet_mask': construct_mask(row_exs=batch_exs) if not args.is_test else None,
         'self_negative_mask': construct_self_negative_mask(batch_exs) if not args.is_test else None,
     }
-
     return batch_dict
+def original_collate(batch_data: List[dict]) -> dict:
+    hr_token_ids, hr_mask = to_indices_and_mask(
+        [torch.LongTensor(ex['hr_token_ids']) for ex in batch_data],
+        pad_token_id=get_tokenizer().pad_token_id)
+    hr_token_type_ids = to_indices_and_mask(
+        [torch.LongTensor(ex['hr_token_type_ids']) for ex in batch_data],
+        need_mask=False)
+
+    tail_token_ids, tail_mask = to_indices_and_mask(
+        [torch.LongTensor(ex['tail_token_ids']) for ex in batch_data],
+        pad_token_id=get_tokenizer().pad_token_id)
+    tail_token_type_ids = to_indices_and_mask(
+        [torch.LongTensor(ex['tail_token_type_ids']) for ex in batch_data],
+        need_mask=False)
+
+    head_token_ids, head_mask = to_indices_and_mask(
+        [torch.LongTensor(ex['head_token_ids']) for ex in batch_data],
+        pad_token_id=get_tokenizer().pad_token_id)
+    head_token_type_ids = to_indices_and_mask(
+        [torch.LongTensor(ex['head_token_type_ids']) for ex in batch_data],
+        need_mask=False)
+
+    batch_exs = [ex['obj'] for ex in batch_data]
+    batch_dict = {
+        'hr_token_ids': hr_token_ids,
+        'hr_mask': hr_mask,
+        'hr_token_type_ids': hr_token_type_ids,
+        'tail_token_ids': tail_token_ids,
+        'tail_mask': tail_mask,
+        'tail_token_type_ids': tail_token_type_ids,
+        'head_token_ids': head_token_ids,
+        'head_mask': head_mask,
+        'head_token_type_ids': head_token_type_ids,
+        'batch_data': batch_exs,
+        'triplet_mask': construct_mask(row_exs=batch_exs) if not args.is_test else None,
+        'self_negative_mask': construct_self_negative_mask(batch_exs) if not args.is_test else None,
+    }
+    return batch_dict
+
+def collate(batch_data: List[dict]) -> dict:
+    
+    ################ simkgc ################
+    simkgc_batch_data = example2batch_item(
+        [ex["simkgc"] for ex in batch_data]
+    )
+    ################# end of simkgc ############
+    
+    ################ cake #################
+    cake_batch_dict = {}
+    for i, batch_item in enumerate(batch_data):
+        cake_batch_dict[i] = {}
+        cake_batch_dict[i]["head"] =example2batch_item(batch_item["cake"]["head"])
+        cake_batch_dict[i]["tail"] =example2batch_item(batch_item["cake"]["tail"])
+    
+    ########################################
+    return {
+        "simkgc": simkgc_batch_data,
+        "cake": cake_batch_dict
+    }
 
 
 def to_indices_and_mask(batch_tensor, pad_token_id=0, need_mask=True):

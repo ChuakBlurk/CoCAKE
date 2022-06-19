@@ -85,6 +85,9 @@ parser.add_argument('--neighbor-weight', default=0.0, type=float,
                     help='weight for re-ranking entities')
 parser.add_argument('--eval-model-path', default='', type=str, metavar='N',
                     help='path to model, only used for evaluation')
+######## cake #########
+parser.add_argument('--cake-gamma',  default=9.0, type=float)
+parser.add_argument('--cake-adversial-weight', default=10.0, type=float)
 
 args = parser.parse_args()
 

@@ -328,7 +328,7 @@ class RelationBatchSampler:
                     sampled_relations.append(sampled_relation)
             random_sample_cnt = args.batch_size - cake_sample_cnt
             sampled_exs += random.choices(range(self.ex_cnt), k=random_sample_cnt)
-            
+            print(sampled_exs[:self.batch_size])
             yield sampled_exs[:self.batch_size]
             
     def __len__(self):

@@ -10,7 +10,7 @@ from typing import Dict
 from transformers import get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup
 from transformers import AdamW
 
-from doc import Dataset, collate
+from doc import OriginalDataset, Dataset, collate, original_collate
 from utils import AverageMeter, ProgressMeter
 from utils import save_checkpoint, delete_old_ckt, report_num_trainable_parameters, move_to_cuda, get_model_obj
 from metric import accuracy
@@ -41,7 +41,7 @@ class Trainer:
         report_num_trainable_parameters(self.model)
 
         train_dataset = Dataset(path=args.train_path, task=args.task, commonsense_path=args.commonsense_path, head_ns_cnt=args.head_ns_cnt, tail_ns_cnt=args.tail_ns_cnt)
-        valid_dataset = Dataset(path=args.valid_path, task=args.task) if args.valid_path else None
+        valid_dataset = OriginalDataset(path=args.valid_path, task=args.task) if args.valid_path else None
         num_training_steps = args.epochs * len(train_dataset) // max(args.batch_size, 1)
         args.warmup = min(args.warmup, num_training_steps // 10)
         logger.info('Total training steps: {}, warmup steps: {}'.format(num_training_steps, args.warmup))
@@ -63,7 +63,7 @@ class Trainer:
                 valid_dataset,
                 batch_size=args.batch_size * 2,
                 shuffle=True,
-                collate_fn=collate,
+                collate_fn=original_collate,
                 num_workers=args.workers,
                 pin_memory=True)
 
@@ -110,9 +110,9 @@ class Trainer:
                 batch_dict = move_to_cuda(batch_dict)
             batch_size = len(batch_dict['batch_data'])
 
-            outputs = self.model(**batch_dict)
-            outputs = get_model_obj(self.model).compute_logits(output_dict=outputs, batch_dict=batch_dict)
-            outputs = ModelOutput(**outputs)
+            outputs = self.model.original_forward(**batch_dict)
+            simkgc_logits = get_model_obj(self.model).original_compute_logits(output_dict=outputs, batch_dict=batch_dict)
+            outputs = ModelOutput(**simkgc_logits)
             logits, labels = outputs.logits, outputs.labels
             loss = self.criterion(logits, labels)
             losses.update(loss.item(), batch_size)
@@ -132,18 +132,20 @@ class Trainer:
         top1 = AverageMeter('Acc@1', ':6.2f')
         top3 = AverageMeter('Acc@3', ':6.2f')
         inv_t = AverageMeter('InvT', ':6.2f')
+        cake_losses = AverageMeter('cake', ':.4')
+        simkgc_losses = AverageMeter('simkgc', ':.4')
         progress = ProgressMeter(
             len(self.train_loader),
-            [losses, inv_t, top1, top3],
+            [losses, inv_t, top1, top3, cake_losses, simkgc_losses],
             prefix="Epoch: [{}]".format(epoch))
-
         for i, batch_dict in enumerate(self.train_loader):
+            
             # switch to train mode
             self.model.train()
 
             if torch.cuda.is_available():
                 batch_dict = move_to_cuda(batch_dict)
-            batch_size = len(batch_dict['batch_data'])
+            batch_size = len(batch_dict["simkgc"]['batch_data'])
 
             # compute output
             if self.args.use_amp:
@@ -151,14 +153,17 @@ class Trainer:
                     outputs = self.model(**batch_dict)
             else:
                 outputs = self.model(**batch_dict)
-            outputs = get_model_obj(self.model).compute_logits(output_dict=outputs, batch_dict=batch_dict)
-            outputs = ModelOutput(**outputs)
+
+            simkgc_logits = get_model_obj(self.model).compute_logits(output_dict=outputs["simkgc"], batch_dict=batch_dict["simkgc"])
+            cake_loss = get_model_obj(self.model).compute_cake_loss(simkgc_output=outputs["simkgc"], cake_output_dict= outputs["cake"])
+            outputs = ModelOutput(**simkgc_logits)
             logits, labels = outputs.logits, outputs.labels
-            assert logits.size(0) == batch_size
-            # head + relation -> tail
-            loss = self.criterion(logits, labels)
+            sim_kgc_loss = self.criterion(logits, labels)
+            
             # tail -> head + relation
-            loss += self.criterion(logits[:, :batch_size].t(), labels)
+            sim_kgc_loss += self.criterion(logits[:, :batch_size].t(), labels)
+            loss = cake_loss + sim_kgc_loss     
+
 
             acc1, acc3 = accuracy(logits, labels, topk=(1, 3))
             top1.update(acc1.item(), batch_size)
@@ -166,7 +171,9 @@ class Trainer:
 
             inv_t.update(outputs.inv_t, 1)
             losses.update(loss.item(), batch_size)
-
+            cake_losses.update(cake_loss, 1)
+            simkgc_losses.update(sim_kgc_loss, 1)
+            
             # compute gradient and do SGD step
             self.optimizer.zero_grad()
             if self.args.use_amp:
@@ -185,6 +192,8 @@ class Trainer:
                 progress.display(i)
             if (i + 1) % self.args.eval_every_n_step == 0:
                 self._run_eval(epoch=epoch, step=i + 1)
+        print("cake_loss:", cake_loss)
+        print("simkgc_loss:", sim_kgc_loss)
         logger.info('Learning rate: {}'.format(self.scheduler.get_last_lr()[0]))
 
     def _setup_training(self):
