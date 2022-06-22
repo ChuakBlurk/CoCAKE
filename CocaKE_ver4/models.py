@@ -182,12 +182,12 @@ class CustomBertModel(nn.Module, ABC):
                 logits = logits.mm(triplet_mask.t())
             negative_score = logits.diagonal()
             negative_score = F.logsigmoid(-negative_score).mean()
-            negative_score *= self.log_inv_t.exp()
+            negative_score *= self.log_inv_t.exp().detach()
             positive_score = positive_scores[idx]
             positive_score = F.logsigmoid(positive_score)
             positive_sample_loss = - positive_score.mean()
             negative_sample_loss = - negative_score.mean()
-            loss += (positive_sample_loss + negative_sample_loss)/(2*(len(hr_vector)))
+            loss += ((positive_sample_loss + negative_sample_loss)/(2*(len(hr_vector)))).detach()
         loss /= len(cake_output_dict)
         return loss
 

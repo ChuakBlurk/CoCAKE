@@ -139,7 +139,6 @@ class Trainer:
             [losses, inv_t, top1, top3, cake_losses, simkgc_losses],
             prefix="Epoch: [{}]".format(epoch))
         for i, batch_dict in enumerate(self.train_loader):
-            
             # switch to train mode
             self.model.train()
 
